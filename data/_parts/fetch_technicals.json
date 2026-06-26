@@ -1,0 +1,17 @@
+{
+  "ndx_rsi": 50.0,
+  "ndx_macd_hist": -138.42,
+  "ndx_drawdown_pct": -3.98,
+  "ndx_atr_pct": 2.29,
+  "ndx_above_30wma": true,
+  "ndx_swing_structure": "down",
+  "ndx_divergence": "无",
+  "spx_rsi": 46.3,
+  "spx_macd_hist": -24.04,
+  "spx_drawdown_pct": -3.32,
+  "spx_atr_pct": 1.33,
+  "spx_above_30wma": true,
+  "spx_swing_structure": "down",
+  "spx_divergence": "无",
+  "_updated": "2026-06-26 10:05:27"
+}

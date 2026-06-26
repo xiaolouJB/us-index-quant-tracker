@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:PYTHONUTF8 = '1'; python scripts\\\\fetch_all.py)"
+    ]
+  }
+}

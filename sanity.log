@@ -1,0 +1,21 @@
+快照更新时间: 2026-06-11 07:57:17 | 行情基准日: 2026-06-10
+
+--- 常识性校验 ---
+✅ US10Y=4.54% 正常
+✅ VIX=22.22 正常
+✅ QQQ Walls 排列正常 (Put 700.0 < Call 720.0)
+✅ SPY Walls 排列正常 (Put 720.0 < Call 760.0)
+
+--- 环比变动熔断（对比上期 history/indicators.csv）---
+上期基准日: 2026-06-09
+✅ US10Y 环比 +1.4bp 正常
+✅ NDX 价格环比 -1.98% 正常
+✅ SPX 价格环比 -1.62% 正常
+✅ NDX Forward P/E 环比 +0.0% 正常
+   NDX ERP = 100/23.74 − 4.54 = -0.33%
+✅ SPX Forward P/E 环比 +0.0% 正常
+   SPX ERP = 100/20.68 − 4.54 = +0.29%
+
+✅ 审核通过（警告 0 项）— 可以出报告
+
+📝 本期数据已落库: D:\Antigravuty-project\skill-main\美国宽基指数分析\history\indicators.csv (date=2026-06-10)
