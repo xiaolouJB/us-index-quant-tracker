@@ -7,6 +7,7 @@ sanity_check.py — 金融数据三重审核门禁（SKILL.md 第3节的脚本�
 流程：
   1. 读取 data/latest_snapshot.json（各 fetch 脚本的汇总输出）
   2. 与 history/indicators.csv 最后一期对比，执行环比熔断与常识校验
+  2b. K线日期错位门禁：fetch_all 逐品种校验的 _stale_symbols，缺失未补齐则阻断
   3. 全部通过且带 --commit 时，把本期数据追加写入 history/indicators.csv
 退出码：0=通过（可出报告）；1=存在⛔级失败（禁止出报告，先排查数据源）
 """
@@ -98,6 +99,31 @@ def check_sanity(snap):
                         report(FAIL, f'{p.upper()} {name}={w} 距现价{spot}超20%，禁止作为实盘参考点')
                 if close and abs(spot - close) / close > 0.01:
                     report(FAIL, f'{p.upper()} 期权现货价({spot}) 与 主行情收盘价({close}) 严重脱节！期权数据可能滞后，禁止出报告！')
+
+
+SYM_PRICE_KEY = {'^NDX': 'ndx_close', '^GSPC': 'spx_close', 'QQQ': 'qqq_close',
+                 'SPY': 'spy_close', '^VIX': 'vix', '^VXN': 'vxn', '^TNX': 'us10y',
+                 '^SOX': 'sox', 'DX-Y.NYB': 'dxy'}
+
+
+def check_stale_symbols(snap):
+    """K线日期错位门禁：fetch_all 逐品种校验最后一根K线日期 != 目标交易日的品种。
+    仍缺失（未被兜底源补齐）→ ⛔阻断；已被兜底源补齐 → ⚠️提醒人工复核。"""
+    print()
+    print('--- K线日期错位门禁（fetch_all 逐品种校验）---')
+    stale = snap.get('_stale_symbols') or []
+    expected = snap.get('_expected_trading_day')
+    if not stale:
+        report(PASS, f'全部品种 K线日期 = 目标交易日 {expected}')
+        return
+    for item in stale:
+        sym, bar = item.get('symbol'), item.get('bar_date')
+        key = SYM_PRICE_KEY.get(sym)
+        recovered = key is not None and snap.get(key) is not None
+        if recovered:
+            report(WARN, f'{sym} Yahoo K线滞后（{bar}≠{expected}），已由兜底源补齐 {key}={snap.get(key)}，出报告前请人工复核该数')
+        else:
+            report(FAIL, f'{sym} K线日期错位（{bar}≠{expected}）且价格仍缺失：已按⚠️待核实处理（绝不编数），禁止出报告')
 
 
 def check_dod(snap, last, fwd_pe_ndx, fwd_pe_spx):
@@ -197,6 +223,7 @@ def main():
 
     print()
     check_sanity(snap)
+    check_stale_symbols(snap)
     last = load_last_history()
     check_dod(snap, last, args.fwd_pe_ndx, args.fwd_pe_spx)
 

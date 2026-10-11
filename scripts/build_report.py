@@ -13,12 +13,14 @@ build_report.py — 报告确定性装配器（根治"换模型就出错"的后�
 import argparse
 import json
 import os
+import re
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 REPORT_DATA_PATH = os.path.join(DATA_DIR, 'report_data.json')
 NARRATIVE_PATH = os.path.join(DATA_DIR, 'narrative.json')
+CAT_PATH = os.path.join(DATA_DIR, 'cat_levels.json')
 OUT_DIR = os.path.join(BASE_DIR, '分析报告')
 
 RED, YEL, GRN, NA = '🔴', '🟡', '🟢', '⚪'
@@ -273,6 +275,46 @@ def row(*cells):
     return '| ' + ' | '.join(str(c) for c in cells) + ' |'
 
 
+def strip_prefix(text, prefix):
+    """去掉文案行首与给定标签重复的 'emoji+短标签：' 前缀。
+    （表格时代遗留：单元格里自带标签；改成列表标题后标题里已有，再留就重复。）"""
+    if not text or not prefix:
+        return text
+    m = re.match(r'^\s*(\S{1,12}?)\s*[：:]\s*(.*)$', text, re.S)
+    if m:
+        lab = m.group(1).replace(' ', '').replace('　', '')
+        pre = prefix.replace(' ', '').replace('　', '')
+        if lab == pre:
+            return m.group(2)
+    return text
+
+
+def paras(text, per=2):
+    """把长文案按中文句号/问号/感叹号切成短段落（每 per 句一段），适配手机阅读节奏。
+    注意：分号不切——分号连接的是紧耦合分句，断开会留下悬空半句。"""
+    if not text:
+        return []
+    sents = [s for s in re.split(r'(?<=[。！？])', text) if s.strip()]
+    return [''.join(sents[i:i + per]) for i in range(0, len(sents), per)]
+
+
+_CJK = '\u4e00-\u9fff'
+
+
+def pangu(text):
+    """盘古之白鹭：中文与拉丁字母/数字相邻时补一个半角空格。
+    中文排版基本功；Markdown 渲染器不会自动做，只能在装配时 baked in。
+    全角标点两侧不加空格；emoji 不受影响；`+` 作枚举符时转 `、`（数字前的 +/- 不动）；
+    直引号 '...' 包中文时转弯引号 "..."（大陆简体规范）。"""
+    if not text:
+        return text
+    text = re.sub(f'(?<=[{_CJK}])(?=[A-Za-z0-9])', ' ', text)
+    text = re.sub(f'(?<=[A-Za-z0-9])(?=[{_CJK}])', ' ', text)
+    text = re.sub(f'(?<=[A-Za-z{_CJK}])\\+(?=[A-Za-z{_CJK}])', '、', text)
+    text = re.sub(f"'([{_CJK}][^']*?)'", r'"\1"', text)
+    return text
+
+
 def build(data, nar):
     d = data.get('data', {})
     mf = nar.get('manual_fields', {})
@@ -328,7 +370,7 @@ def build(data, nar):
     opn, ops = op_tier(ln), op_tier(ls)
 
     def nf(key, default='（待模型在 narrative.json 填写）'):
-        return nar.get(key) or default
+        return pangu(nar.get(key) or default)
 
     # 3秒结论用：把灯号翻译成动作短语
     act3 = {RED: '别买/守住', YEL: '观望/小步', GRN: '可买/加码', NA: '待核实'}
@@ -342,72 +384,120 @@ def build(data, nar):
 
     # ⚡ 3秒结论卡（最顶层，小白扫一眼就走）
     A('## ⚡ 3秒结论')
-    A(f'> **纳斯达克100（QQQ）：{WEATHER[ln]} → {act3[ln]}**　|　{nf("plain_ndx","")}')
-    A(f'> **标普500（SPY）：{WEATHER[ls]} → {act3[ls]}**　|　{nf("plain_spx","")}')
-    A('>')
-    A(f'> 体检记分卡：估值{val} 宏观{macro} 趋势{trend} 情绪{senti} 资金{money}　（🟢好 🟡中性 🔴差）')
+    A('')
+    A(f'🟣 **纳斯达克100（QQQ）**： {WEATHER[ln]} → **{act3[ln]}**')
+    A(f'{strip_prefix(nf("plain_ndx",""), WEATHER[ln])}')
+    A('')
+    A(f'🔵 **标普500（SPY）**： {WEATHER[ls]} → **{act3[ls]}**')
+    A(f'{strip_prefix(nf("plain_spx",""), WEATHER[ls])}')
+    A('')
+    A(f'🧾 **体检记分卡**：估值 {val}　宏观 {macro}　趋势 {trend}　情绪 {senti}　资金 {money}　（🟢好 🟡中性 🔴差）')
     A('')
     A('---\n')
 
     # 今日操作速览
     A('## 🎯 今日操作速览与执行摘要')
-    A(row('', '纳斯达克100 (NDX)', '标普500 (SPX)'))
-    A(row('---', '---', '---'))
-    A(row('**最新收盘（指数 / ETF）**',
-          f'{num(g(d,"ndx_close"),"{:,.2f}")} ({pct(g(d,"ndx_chg_pct"))}) / QQQ {num(g(d,"qqq_close"))} ({pct(g(d,"qqq_chg_pct"))})',
-          f'{num(g(d,"spx_close"),"{:,.2f}")} ({pct(g(d,"spx_chg_pct"))}) / SPY {num(g(d,"spy_close"))} ({pct(g(d,"spy_chg_pct"))})'))
-    A(row('**今日灯号**', f'{ln} {lnname}', f'{ls} {lsname}'))
-    A(row('**申购/加仓**', opn['buy'], ops['buy']))
-    A(row('**定投**', '不适用' if nar.get('ndx_no_dca', True) else opn['dca'], ops['dca']))
-    A(row('**最重要支撑**',
-          f'QQQ {num(g(d,"qqq_put_wall"),"{:.0f}")}（期权护城河）→ 年线 {num(g(d,"ndx_200dma"),"{:,.0f}")}',
-          f'SPY {num(g(d,"spy_put_wall"),"{:.0f}")}（期权护城河）→ 年线 {num(g(d,"spx_200dma"),"{:,.0f}")}'))
+    A('')
+    A('### 🟣 纳斯达克100')
+    A('')
+    A(f'- 最新收盘：**{num(g(d,"ndx_close"),"{:,.2f}")}（{pct(g(d,"ndx_chg_pct"))}）**、QQQ **{num(g(d,"qqq_close"))}（{pct(g(d,"qqq_chg_pct"))}）**')
+    A(f'- 今日灯号：**{ln} {lnname}**')
+    A(f'- 申购/加仓：**{opn["buy"]}**')
+    A(f'- 定投：**{"不适用" if nar.get("ndx_no_dca", True) else opn["dca"]}**')
+    A(f'- 最重要支撑：QQQ **{num(g(d,"qqq_put_wall"),"{:.0f}")}**（期权护城河）→ 年线 **{num(g(d,"ndx_200dma"),"{:,.0f}")}**')
+    A('')
+    A('### 🔵 标普500')
+    A('')
+    A(f'- 最新收盘：**{num(g(d,"spx_close"),"{:,.2f}")}（{pct(g(d,"spx_chg_pct"))}）**、SPY **{num(g(d,"spy_close"))}（{pct(g(d,"spy_chg_pct"))}）**')
+    A(f'- 今日灯号：**{ls} {lsname}**')
+    A(f'- 申购/加仓：**{ops["buy"]}**')
+    A(f'- 定投：**{ops["dca"]}**')
+    A(f'- 最重要支撑：SPY **{num(g(d,"spy_put_wall"),"{:.0f}")}**（期权护城河）→ 年线 **{num(g(d,"spx_200dma"),"{:,.0f}")}**')
     A('')
     A(f'> 🚨 **行动指令：{nf("exec_action")}**')
     A(f'> 🎭 **主力暗牌**：{nf("dark_cards")}')
     A(f'> 📅 **本周注意：** {nf("weekly_note")}\n')
+
+    # 🐱 猫姐下周点位（每周六周复盘存 data/cat_levels.json；视频日距报告数据日 9 天内才展示，过期/缺失静默跳过）
+    cat = None
+    if os.path.exists(CAT_PATH):
+        try:
+            with open(CAT_PATH, encoding='utf-8') as f:
+                cat = json.load(f)
+        except Exception:
+            cat = None
+    if cat:
+        try:
+            _vd = datetime.strptime(cat.get('video_date', ''), '%Y-%m-%d').date()
+            _pd = datetime.strptime(price_date, '%Y-%m-%d').date()
+            _fresh = -2 <= (_pd - _vd).days <= 8
+        except Exception:
+            _fresh = False
+        if _fresh:
+            _s, _q = cat.get('spy') or {}, cat.get('qqq') or {}
+            _parts = []
+            if _s.get('defense') is not None:
+                _seg = f'SPY 防守线 **{_s["defense"]:.2f}**'
+                if _s.get('resistance') is not None:
+                    _seg += f'／上方压力约 **{_s["resistance"]:.2f}**'
+                _parts.append(_seg)
+            if _q.get('defense') is not None:
+                _parts.append(f'QQQ 防守线 **{_q["defense"]:.2f}**')
+            if _parts:
+                _stance = '；'.join(x for x in [cat.get('stance_spy'), cat.get('stance_qqq')] if x)
+                _line = (f'> 🐱 **猫姐下周点位**（{cat.get("video_date", "")} 周复盘 · ETF 点位）：'
+                         + '；'.join(_parts))
+                if _stance:
+                    _line += f'。{_stance}'
+                A(_line)
+                A(f'> 📺 来源：猫姐周复盘 {cat.get("video_url", "")}\n')
     A('---\n')
 
     # 小白必读
-    A('# ═══════════════════════════════════')
-    A('# 📚 小白必读：5分钟看懂今天该不该买')
-    A('# ═══════════════════════════════════\n')
+    A('# 📚 小白必读：5分钟看懂今天该不该买\n')
 
     A('## A. 现在大盘是什么状态？（天气预报）')
-    A(row('指数', '一句话状态', '天气'))
-    A(row('---', '---', '---'))
-    A(row('🟣 纳斯达克100', nf('plain_ndx'), WEATHER[ln]))
-    A(row('🔵 标普500', nf('plain_spx'), WEATHER[ls]))
+    A('')
+    A(f'- 🟣 **纳斯达克100**：{WEATHER[ln]}')
+    A(f'  - {strip_prefix(nf("plain_ndx"), WEATHER[ln])}')
+    A(f'- 🔵 **标普500**：{WEATHER[ls]}')
+    A(f'  - {strip_prefix(nf("plain_spx"), WEATHER[ls])}')
     A(f'\n> **总结：** {nf("summary_take")}\n')
 
     A('## B. 那你该怎么操作？')
-    A(row('你的情况', '纳斯达克100 (QQQ类)', '标普500 (SPY类)'))
-    A(row('---', '---', '---'))
-    A(row('**已经在定投**', '（无定投计划，跳过）', f'{ops["dca"]}'))
-    A(row('**想加仓/新买入**', opn['buy'], ops['buy']))
-    A(row('**手里已有仓位**', '拿住别慌，守住护城河' if ln != GRN else '可继续持有', '拿住别慌，守住护城河' if ls != GRN else '可继续持有'))
+    A('')
+    hold_n = '拿住别慌，守住护城河' if ln != GRN else '可继续持有'
+    hold_s = '拿住别慌，守住护城河' if ls != GRN else '可继续持有'
+    A(f'- **已经在定投**：纳指（无定投计划，跳过）／标普{ops["dca"]}')
+    A(f'- **想加仓/新买入**：纳指{opn["buy"]}／标普{ops["buy"]}')
+    A(f'- **手里已有仓位**：{hold_n if hold_n == hold_s else "纳指" + hold_n + "／标普" + hold_s}')
     A(f'\n> 💡 **大白话理由：** {nf("operation_reason")}\n')
 
     A('## C. 凭什么这么判断？我们给大盘做了5项体检')
-    A(row('体检项', '它管什么', '评级', '现在啥情况（大白话）'))
-    A(row('---', '---', '---', '---'))
-    A(row('💰 估值', '贵不贵、划不划算', val, nf('dim_valuation_say', '见下方估值科')))
-    A(row('🌊 宏观环境', '大环境顺不顺风', macro, nf('dim_macro_say', '见下方宏观科')))
-    A(row('📈 趋势', '现在是上坡还是下坡', trend, nf('dim_trend_say', '见下方趋势科')))
-    A(row('😱 情绪', '大家太贪婪还是太恐惧', senti, nf('dim_sentiment_say', '见下方情绪科')))
-    A(row('🐳 资金筹码', '大资金在偷偷买还是卖', money, nf('dim_money_say', '见下方资金科')))
+    A('')
+    for icon, name, short, job, grade, say in [
+        ('💰', '估值', '估值', '贵不贵、划不划算', val, nf('dim_valuation_say', '见下方估值科')),
+        ('🌊', '宏观环境', '宏观', '大环境顺不顺风', macro, nf('dim_macro_say', '见下方宏观科')),
+        ('📈', '趋势', '趋势', '现在是上坡还是下坡', trend, nf('dim_trend_say', '见下方趋势科')),
+        ('😱', '情绪', '情绪', '大家太贪婪还是太恐惧', senti, nf('dim_sentiment_say', '见下方情绪科')),
+        ('🐳', '资金筹码', '资金', '大资金在偷偷买还是卖', money, nf('dim_money_say', '见下方资金科'))]:
+        A(f'- {icon} **{name}**（{job}）： {grade}')
+        A(f'  - {strip_prefix(say, icon + short)}')
     A('\n> **为什么偏看这5个方面？** 它们正好覆盖决定股价的全部力量：估值定长期能赚多少、宏观定资金潮水方向、趋势定是不是好时机、情绪是反向温度计、资金是大钱真实动作。少看任何一个都有盲区。\n')
 
     # D 指标卡
     A('## D. 看懂背后的每个数字（指标解读卡）')
+    A('')
 
     def card(title, rows):
         A(f'#### {title}')
-        A(row('指标', '大白话是什么', '当前值', '处于什么水平', '对大盘的影响'))
-        A(row('---', '---', '---', '---', '---'))
-        for r in rows:
-            A(row(*r))
         A('')
+        for name, what, val_s, lvl, imp in rows:
+            A(f'**{name}** · {what}')
+            A(f'- 当前：{val_s}')
+            A(f'- 水平：{lvl}')
+            A(f'- 影响：{imp}')
+            A('')
 
     lz, li = lvl_erp(erp_n if erp_n is not None else erp_s)
     card('💰 估值科', [
@@ -428,7 +518,7 @@ def build(data, nar):
         ['RSI', '涨跌过头温度计', f'纳指 {num(g(d,"ndx_rsi"),"{:.0f}")} / 标普 {num(g(d,"spx_rsi"),"{:.0f}")}', lvl_rsi(g(d, 'ndx_rsi'))[0], lvl_rsi(g(d, 'ndx_rsi'))[1]],
     ])
     card('😱 情绪科', [
-        ['恐惧贪婪指数', '市场情绪打分(0-100)', num(g(d, 'fear_greed'), '{:.0f}'), lvl_fg(g(d, 'fear_greed'))[0], lvl_fg(g(d, 'fear_greed'))[1]],
+        ['恐惧贪婪指数', '市场情绪打分（0-100）', num(g(d, 'fear_greed'), '{:.0f}'), lvl_fg(g(d, 'fear_greed'))[0], lvl_fg(g(d, 'fear_greed'))[1]],
         ['VIX 恐慌指数', '预期波动大不大', num(g(d, 'vix')), lvl_vix(g(d, 'vix'))[0], lvl_vix(g(d, 'vix'))[1]],
         ['PCR 期权比', '买保险vs买彩票的人', f'SPY {num(g(d,"spy_pcr_vol"))} / QQQ {num(g(d,"qqq_pcr_vol"))}', lvl_pcr(g(d, 'spy_pcr_vol'))[0], lvl_pcr(g(d, 'spy_pcr_vol'))[1]],
     ])
@@ -439,33 +529,36 @@ def build(data, nar):
     ])
 
     A('## E. 这几项打架了，最终听谁的？')
-    A(f'> {nf("arbitration")}\n')
+    A('')
+    for p in paras(nf("arbitration")):
+        A(p)
+        A('')
 
     A('---\n')
-    A('<details>')
-    A('<summary>📂 <b>展开看进阶数据区</b>（仪表盘 / 环比 / 深度解读 —— 想深入了解再点开，小白可跳过）</summary>\n')
+    A('## 📂 进阶数据区（仪表盘 / 环比 / 深度解读 —— 小白可跳过）')
+    A('')
 
     # 进阶：双核仪表盘（数字全来自JSON）
     for idx, name, fpe, ep, erpv, ps, cape_v, top, light, lname in [
-        ('ndx', '纳斯达克100 (NDX)', fpe_n, ep_n, erp_n, ps_n, None, top_n, ln, lnname),
-        ('spx', '标普500 (SPX)', fpe_s, ep_s, erp_s, ps_s, cape, top_s, ls, lsname)]:
+        ('ndx', '纳斯达克100（NDX）', fpe_n, ep_n, erp_n, ps_n, None, top_n, ln, lnname),
+        ('spx', '标普500（SPX）', fpe_s, ep_s, erp_s, ps_s, cape, top_s, ls, lsname)]:
         etf = 'QQQ' if idx == 'ndx' else 'SPY'
         A(f'## 📊 {name} — 仪表盘')
         A(row('指标', '当前值', '状态'))
         A(row('---', '---', '---'))
-        A(row(f'{name.split()[0]} / {etf} 收盘',
-              f'{num(g(d, idx+"_close"),"{:,.2f}")} ({pct(g(d, idx+"_chg_pct"))}) / {num(g(d, etf.lower()+"_close"))} ({pct(g(d, etf.lower()+"_chg_pct"))})', light))
-        A(row('Forward P/E', f'{num(fpe)}x', f'E/P ≈ {num(ep)}%'))
-        A(row('US10Y', f'{num(us10y)}%', lvl_us10y(us10y)[0]))
-        A(row('**ERP（核心）**', f'{num(ep)}% − {num(us10y)}% = {pct(erpv)}', lvl_erp(erpv)[0]))
+        A(row(f'{name.split("（")[0]}/{etf} 收盘',
+              f'**{num(g(d, idx+"_close"),"{:,.2f}")}（{pct(g(d, idx+"_chg_pct"))}）** / **{num(g(d, etf.lower()+"_close"))}（{pct(g(d, etf.lower()+"_chg_pct"))}）**', light))
+        A(row('Forward P/E', f'**{num(fpe)}x**', f'E/P ≈ {num(ep)}%'))
+        A(row('US10Y', f'**{num(us10y)}%**', lvl_us10y(us10y)[0]))
+        A(row('**ERP（核心）**', f'**{num(ep)}% − {num(us10y)}% = {pct(erpv)}**', lvl_erp(erpv)[0]))
         if idx == 'spx':
-            A(row('CAPE 席勒市盈率', num(cape_v), lvl_cape(cape_v)[0]))
-        A(row('P/S 市销率', f'{num(ps)}x', '红线 >{}x'.format(5.0 if idx == 'ndx' else 3.0)))
-        A(row(f'{etf} Top10集中度', f'{num(top)}%', '红线 >{}%'.format(50 if idx == 'ndx' else 30)))
-        A(row('RSI(14)', num(g(d, idx+'_rsi'), '{:.0f}'), lvl_rsi(g(d, idx+'_rsi'))[0]))
-        A(row('50日均线 / 年线', f'{num(g(d, idx+"_50dma"),"{:,.0f}")} / {num(g(d, idx+"_200dma"),"{:,.0f}")}',
+            A(row('CAPE 席勒市盈率', f'**{num(cape_v)}**', lvl_cape(cape_v)[0]))
+        A(row('P/S 市销率', f'**{num(ps)}x**', '红线 >{}x'.format(5.0 if idx == 'ndx' else 3.0)))
+        A(row(f'{etf} Top10集中度', f'**{num(top)}%**', '红线 >{}%'.format(50 if idx == 'ndx' else 30)))
+        A(row('RSI(14)', f'**{num(g(d, idx+"_rsi"), "{:.0f}")}**', lvl_rsi(g(d, idx+'_rsi'))[0]))
+        A(row('50日均线 / 年线', f'**{num(g(d, idx+"_50dma"),"{:,.0f}")}** / **{num(g(d, idx+"_200dma"),"{:,.0f}")}**',
               f'年线偏离 {pct(g(d, idx+"_dev200"))}'))
-        A(row('期权 Put/Call Wall', f'{num(g(d, etf.lower()+"_put_wall"),"{:.0f}")} / {num(g(d, etf.lower()+"_call_wall"),"{:.0f}")}',
+        A(row('期权 Put/Call Wall', f'**{num(g(d, etf.lower()+"_put_wall"),"{:.0f}")}** / **{num(g(d, etf.lower()+"_call_wall"),"{:.0f}")}**',
               f'净GEX {num(g(d, etf.lower()+"_net_gex_bn"),"{:+.2f}")}B / 净DEX {num(g(d, etf.lower()+"_net_dex_bn"),"{:+.2f}")}B'))
         A('')
 
@@ -473,19 +566,27 @@ def build(data, nar):
     A('## 📌 核心变量环比（同 history/indicators.csv）')
     A(row('变量', '本期值'))
     A(row('---', '---'))
-    A(row('NDX / SPX 收盘', f'{num(g(d,"ndx_close"),"{:,.0f}")} / {num(g(d,"spx_close"),"{:,.0f}")}'))
-    A(row('US10Y / US2Y', f'{num(us10y)}% / {num(g(d,"us2y"))}%'))
-    A(row('VIX / VXN', f'{num(g(d,"vix"))} / {num(g(d,"vxn"))}'))
-    A(row('ERP (NDX/SPX)', f'{pct(erp_n)} / {pct(erp_s)}'))
-    A(row('DIX / GEX', f'{num(g(d,"dix_pct"))}% / {num(g(d,"gex_bn"),"{:+.2f}")}B'))
+    A(row('NDX / SPX 收盘', f'**{num(g(d,"ndx_close"),"{:,.0f}")}** / **{num(g(d,"spx_close"),"{:,.0f}")}**'))
+    A(row('US10Y / US2Y', f'**{num(us10y)}%** / **{num(g(d,"us2y"))}%**'))
+    A(row('VIX / VXN', f'**{num(g(d,"vix"))}** / **{num(g(d,"vxn"))}**'))
+    A(row('ERP（NDX/SPX）', f'**{pct(erp_n)}** / **{pct(erp_s)}**'))
+    A(row('DIX / GEX', f'**{num(g(d,"dix_pct"))}%** / **{num(g(d,"gex_bn"),"{:+.2f}")}B**'))
     A('')
 
-    # 深度解读
+    # 深度解读（人民日报式：小标题分节 + 短段落，手机阅读节奏）
     A('## 📖 本期行情大白话深度解读')
-    A(f'> **{nf("thesis_title")}**\n>')
-    A(f'> **1. 估值陷阱**：{nf("thesis_valuation")}\n>')
-    A(f'> **2. 流动性与做市商**：{nf("thesis_liquidity")}\n>')
-    A(f'> **3. 给你的忠告**：{nf("thesis_advice")}\n')
+    A('')
+    A(f'**{nf("thesis_title")}**')
+    A('')
+    for i, (sub, key) in enumerate(
+            [('估值陷阱', 'thesis_valuation'),
+             ('流动性与做市商', 'thesis_liquidity'),
+             ('给你的忠告', 'thesis_advice')], 1):
+        A(f'### {i}. {sub}')
+        A('')
+        for p in paras(nf(key)):
+            A(p)
+            A('')
 
     # 📋 数据来源附录（P4-C：每个数字有据可查）
     src_ov = data.get('_src_override', {})
@@ -501,8 +602,7 @@ def build(data, nar):
         return SOURCE_MAP.get(cat, ('', ''))[1]
 
     A('## 📋 数据来源附录（每个数字有据可查）')
-    A(row('数据项', '当前值', '来源', '链接/出处', '数据时间'))
-    A(row('---', '---', '---', '---', '---'))
+    A('')
     appendix = [
         ('指数收盘 NDX/SPX', f'{num(g(d,"ndx_close"),"{:,.0f}")} / {num(g(d,"spx_close"),"{:,.0f}")}', 'ndx_close', 'price', price_date),
         ('ETF收盘 QQQ/SPY', f'{num(g(d,"qqq_close"))} / {num(g(d,"spy_close"))}', 'qqq_close', 'price', price_date),
@@ -521,10 +621,8 @@ def build(data, nar):
     for label, val_s, fld, cat, asof in appendix:
         s = src_of(fld, cat)
         u = url_of(fld, cat)
-        A(row(label, val_s, s, u or '—', asof or '—'))
+        A(f'- **{label}**：{val_s} · {s} · {(u or "—")} · {(asof or "—")}')
     A('')
-
-    A('\n</details>\n')
 
     # 数据可信度水印 + P4-B 降级标注
     A('---')

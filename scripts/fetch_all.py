@@ -12,6 +12,13 @@ import warnings
 
 import yfinance as yf
 
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo('America/New_York')
+except Exception:  # 极老旧 Python 兜底（本机为 3.12，走上面分支）
+    from datetime import timezone, timedelta
+    _ET = timezone(timedelta(hours=-4))
+
 warnings.filterwarnings('ignore')
 
 from snapshot_util import update_snapshot
@@ -45,18 +52,45 @@ def fetch_history(symbol, period):
     return h
 
 
+def expected_trading_day(now=None):
+    """本次巡检对应的美股交易日（ET 口径，返回 YYYY-MM-DD）。
+
+    巡检在北京时间 9:30 运行 = 美东前一日 21:30（夏令时）/20:30（冬令时），
+    当天美股已收盘，目标交易日即美东当天日期；周末向前滚到周五。
+    美股节假日由 cron/人工判断休市（不跑全管线），此处不维护节假日表；
+    若节假日误跑，各品种会一致标 stale，管线拒绝出报告——好过静默用旧价。
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    et_now = (now or _dt.now(_tz.utc)).astimezone(_ET)
+    d = et_now.date()
+    if et_now.hour < 16:  # 收盘前运行的保险分支：目标为上一个交易日
+        d -= _td(days=1)
+    while d.weekday() >= 5:  # 周六/周日向前滚到周五
+        d -= _td(days=1)
+    return d.strftime('%Y-%m-%d')
+
+
 def section_prices():
     print('=== 指数与ETF价格（收盘价 / 单日涨跌幅）===')
+    expected = expected_trading_day()
+    print(f'  目标交易日: {expected}（ET 口径；K线日期逐品种校验，错位即标待核实）')
     closes = {}
     chgs = {}
+    bar_dates = {}
+    stale = []  # [{symbol, bar_date}]：K线未结算/源滞后，价格记 None，绝不静默用旧价
     for sym, name in PRICE_SYMBOLS:
         try:
             h = fetch_history(sym, '10d')
             if h.empty:
                 print(f'{name}: 无数据')
                 continue
-            c = float(h['Close'].iloc[-1])
             dt = h.index[-1].strftime('%Y-%m-%d')
+            bar_dates[sym] = dt
+            if dt != expected:
+                stale.append({'symbol': sym, 'bar_date': dt})
+                print(f'{name}: ⚠️ 最后一根K线 {dt} ≠ 目标交易日 {expected}，价格标待核实（不用旧价）')
+                continue
+            c = float(h['Close'].iloc[-1])
             closes[sym] = c
             if len(h) >= 2:
                 p = float(h['Close'].iloc[-2])
@@ -83,12 +117,14 @@ def section_prices():
         'sox': closes.get('^SOX'),
         'dxy': closes.get('DX-Y.NYB'),
         'w5000': closes.get('^W5000'),
-        'price_date': None,
+        # 行情基准日 = 校验通过的 ^GSPC K线日期（恒等于目标交易日）；^GSPC 错位时为 None
+        'price_date': bar_dates.get('^GSPC') if bar_dates.get('^GSPC') == expected else None,
+        '_expected_trading_day': expected,
+        '_stale_symbols': stale,
     })
-    try:
-        SNAP['price_date'] = fetch_history('^GSPC', '5d').index[-1].strftime('%Y-%m-%d')
-    except Exception:
-        pass
+    if stale:
+        print(f'  ⚠️ K线日期错位 {len(stale)} 个品种: '
+              + ', '.join(f"{x['symbol']}[{x['bar_date']}]" for x in stale))
     return closes
 
 
